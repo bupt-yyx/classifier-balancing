@@ -3,13 +3,6 @@ All rights reserved.
 
 This source code is licensed under the license found in the
 LICENSE file in the root directory of this source tree.
-
-Portions of the source code are from the OLTR project which
-notice below and in LICENSE in the root directory of
-this source tree.
-
-Copyright (c) 2019, Zhongqi Miao
-All rights reserved.
 """
 
 
@@ -57,18 +50,21 @@ class BasicBlock(nn.Module):
 class Bottleneck(nn.Module):
     expansion = 4
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None):
+    def __init__(self, inplanes, planes, stride=1, downsample=None,
+                 groups=1, base_width=64, is_last=False):
         super(Bottleneck, self).__init__()
-        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes)
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
-                               padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes)
-        self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
+        width = int(planes * (base_width / 64.)) * groups
+        self.conv1 = nn.Conv2d(inplanes, width, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(width)
+        self.conv2 = nn.Conv2d(width, width, kernel_size=3, stride=stride,
+                               groups=groups, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(width)
+        self.conv3 = nn.Conv2d(width, planes * 4, kernel_size=1, bias=False)
         self.bn3 = nn.BatchNorm2d(planes * 4)
         self.relu = nn.ReLU(inplace=True)
         self.downsample = downsample
         self.stride = stride
+        self.is_last = is_last
 
     def forward(self, x):
         residual = x
@@ -92,11 +88,17 @@ class Bottleneck(nn.Module):
 
         return out
 
-class ResNet(nn.Module):
+class ResNext(nn.Module):
 
-    def __init__(self, block, layers, use_modulatedatt=False, use_fc=False, dropout=None):
+    def __init__(self, block, layers, groups=1, width_per_group=64,
+                 use_modulatedatt=False, use_fc=False, dropout=None,
+                 use_glore=False, use_gem=False):
         self.inplanes = 64
-        super(ResNet, self).__init__()
+        super(ResNext, self).__init__()
+
+        self.groups = groups
+        self.base_width = width_per_group
+
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
                                bias=False)
         self.bn1 = nn.BatchNorm2d(64)
@@ -132,7 +134,7 @@ class ResNet(nn.Module):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
 
-    def _make_layer(self, block, planes, blocks, stride=1):
+    def _make_layer(self, block, planes, blocks, stride=1, is_last=False):
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
@@ -142,10 +144,13 @@ class ResNet(nn.Module):
             )
 
         layers = []
-        layers.append(block(self.inplanes, planes, stride, downsample))
+        layers.append(block(self.inplanes, planes, stride, downsample,
+                            groups=self.groups, base_width=self.base_width))
         self.inplanes = planes * block.expansion
         for i in range(1, blocks):
-            layers.append(block(self.inplanes, planes))
+            layers.append(block(self.inplanes, planes,
+                                groups=self.groups, base_width=self.base_width,
+                                is_last=(is_last and i == blocks-1)))
 
         return nn.Sequential(*layers)
 
