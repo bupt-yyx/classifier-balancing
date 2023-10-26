@@ -114,6 +114,7 @@ if __name__ == "__main__":
 
     classifier = KNNClassifier(feat_dim=4, num_classes=4, 
                                feat_type='un')
-    classifier.update(mean, cens)
+    # classifier.update(mean, cens)
+    classifier.update(cens)
     import pdb; pdb.set_trace()
     logits, _ = classifier(xs)
