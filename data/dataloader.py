@@ -12,7 +12,6 @@ Copyright (c) 2019, Zhongqi Miao
 All rights reserved.
 """
 
-
 import numpy as np
 import torchvision
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
@@ -26,11 +25,16 @@ RGB_statistics = {
         'mean': [0.466, 0.471, 0.380],
         'std': [0.195, 0.194, 0.192]
     },
+    'cifar100': {
+        'mean': [0.4914, 0.4822, 0.4465],
+        'std': [0.2023, 0.1994, 0.2010]
+    },
     'default': {
         'mean': [0.485, 0.456, 0.406],
-        'std':[0.229, 0.224, 0.225]
+        'std': [0.229, 0.224, 0.225]
     }
 }
+
 
 # Data transformation with augmentation
 def get_data_transform(split, rgb_mean, rbg_std, key='default'):
@@ -62,9 +66,10 @@ def get_data_transform(split, rgb_mean, rbg_std, key='default'):
     }
     return data_transforms[split]
 
+
 # Dataset
 class LT_Dataset(Dataset):
-    
+
     def __init__(self, root, txt, transform=None):
         self.img_path = []
         self.labels = []
@@ -73,26 +78,93 @@ class LT_Dataset(Dataset):
             for line in f:
                 self.img_path.append(os.path.join(root, line.split()[0]))
                 self.labels.append(int(line.split()[1]))
-        
+
     def __len__(self):
         return len(self.labels)
-        
+
     def __getitem__(self, index):
 
         path = self.img_path[index]
         label = self.labels[index]
-        
+
         with open(path, 'rb') as f:
             sample = Image.open(f).convert('RGB')
-        
+
         if self.transform is not None:
             sample = self.transform(sample)
 
         return sample, label, index
 
+
+class ImbalanceCIFAR100(torchvision.datasets.CIFAR100):
+    cls_num = 100
+
+    def __init__(self, root, imb_type='exp', imb_factor=0.01, rand_number=0, train=True,
+                 transform=None, target_transform=None,
+                 download=False):
+        super(ImbalanceCIFAR100, self).__init__(root, train, transform, target_transform, download)
+        np.random.seed(rand_number)
+        img_num_list = self.get_img_num_per_cls(self.cls_num, imb_type, imb_factor)
+        self.gen_imbalanced_data(img_num_list)
+        self.cls_num_list = self.get_cls_num_list()
+
+    def get_img_num_per_cls(self, cls_num, imb_type, imb_factor):
+        img_max = len(self.data) / cls_num
+        img_num_per_cls = []
+        if imb_type == 'exp':
+            for cls_idx in range(cls_num):
+                num = img_max * (imb_factor ** (cls_idx / (cls_num - 1.0)))
+                img_num_per_cls.append(int(num))
+        elif imb_type == 'step':
+            for cls_idx in range(cls_num // 2):
+                img_num_per_cls.append(int(img_max))
+            for cls_idx in range(cls_num // 2):
+                img_num_per_cls.append(int(img_max * imb_factor))
+        else:
+            img_num_per_cls.extend([int(img_max)] * cls_num)
+        return img_num_per_cls
+
+    def gen_imbalanced_data(self, img_num_per_cls):
+        new_data = []
+        new_targets = []
+        targets_np = np.array(self.targets, dtype=np.int64)
+        classes = np.unique(targets_np)
+        self.num_per_cls_dict = dict()
+        for the_class, the_img_num in zip(classes, img_num_per_cls):
+            self.num_per_cls_dict[the_class] = the_img_num
+            idx = np.where(targets_np == the_class)[0]
+            np.random.shuffle(idx)
+            selec_idx = idx[:the_img_num]
+            new_data.append(self.data[selec_idx, ...])
+            new_targets.extend([the_class, ] * the_img_num)
+        new_data = np.vstack(new_data)
+        self.data = new_data
+        self.targets = new_targets
+
+    def get_cls_num_list(self):
+        cls_num_list = []
+        for i in range(self.cls_num):
+            cls_num_list.append(self.num_per_cls_dict[i])
+        return cls_num_list
+
+    def __getitem__(self, index: int):
+        image, label = self.data[index], self.targets[index]
+
+        # doing this so that it is consistent with all other datasets
+        # to return a PIL Image
+        sample = Image.fromarray(image)
+
+        if self.transform is not None:
+            sample = self.transform(sample)
+
+        if self.target_transform is not None:
+            label = self.target_transform(label)
+
+        return sample, label, index
+
+
 # Load datasets
 def load_data(data_root, dataset, phase, batch_size, sampler_dic=None, num_workers=4, test_open=False, shuffle=True):
-
     if phase == 'train_plain':
         txt_split = 'train'
     elif phase == 'train_val':
@@ -100,7 +172,7 @@ def load_data(data_root, dataset, phase, batch_size, sampler_dic=None, num_worke
         phase = 'train'
     else:
         txt_split = phase
-    txt = './data/%s/%s_%s.txt'%(dataset, dataset, txt_split)
+    txt = './data/%s/%s_%s.txt' % (dataset, dataset, txt_split)
     # txt = './data/%s/%s_%s.txt'%(dataset, dataset, (phase if phase != 'train_plain' else 'train'))
 
     print('Loading data from %s' % (txt))
@@ -108,6 +180,8 @@ def load_data(data_root, dataset, phase, batch_size, sampler_dic=None, num_worke
     if dataset == 'iNaturalist18':
         print('===> Loading iNaturalist18 statistics')
         key = 'iNaturalist18'
+    elif dataset == 'cifar100_LT':
+        key = 'cifar100'
     else:
         key = 'default'
     rgb_mean, rgb_std = RGB_statistics[key]['mean'], RGB_statistics[key]['std']
@@ -118,24 +192,38 @@ def load_data(data_root, dataset, phase, batch_size, sampler_dic=None, num_worke
         transform = get_data_transform(phase, rgb_mean, rgb_std, key)
 
     print('Use data transformation:', transform)
-
-    set_ = LT_Dataset(data_root, txt, transform)
-    print(len(set_))
-    if phase == 'test' and test_open:
-        open_txt = './data/%s/%s_open.txt'%(dataset, dataset)
-        print('Testing with opensets from %s'%(open_txt))
-        open_set_ = LT_Dataset('./data/%s/%s_open'%(dataset, dataset), open_txt, transform)
-        set_ = ConcatDataset([set_, open_set_])
-
-    if sampler_dic and phase == 'train':
-        print('Using sampler: ', sampler_dic['sampler'])
-        # print('Sample %s samples per-class.' % sampler_dic['num_samples_cls'])
-        print('Sampler parameters: ', sampler_dic['params'])
-        return DataLoader(dataset=set_, batch_size=batch_size, shuffle=False,
-                           sampler=sampler_dic['sampler'](set_, **sampler_dic['params']),
-                           num_workers=num_workers)
+    if dataset == 'cifar100_LT':
+        set_ = torchvision.datasets.CIFAR100(root=data_root, train=False, download=True, transform=transform)
+        if sampler_dic and phase == 'train':
+            print('Using sampler: ', sampler_dic['sampler'])
+            # print('Sample %s samples per-class.' % sampler_dic['num_samples_cls'])
+            print('Sampler parameters: ', sampler_dic['params'])
+            return DataLoader(dataset=set_, batch_size=batch_size, shuffle=False,
+                              sampler=sampler_dic['sampler'](set_, **sampler_dic['params']),
+                              num_workers=num_workers)
+        else:
+            print('No sampler.')
+            print('Shuffle is %s.' % (shuffle))
+            return DataLoader(dataset=set_, batch_size=batch_size,
+                              shuffle=shuffle, num_workers=num_workers)
     else:
-        print('No sampler.')
-        print('Shuffle is %s.' % (shuffle))
-        return DataLoader(dataset=set_, batch_size=batch_size,
-                          shuffle=shuffle, num_workers=num_workers)
+        set_ = LT_Dataset(data_root, txt, transform)
+        print(len(set_))
+        if phase == 'test' and test_open:
+            open_txt = './data/%s/%s_open.txt' % (dataset, dataset)
+            print('Testing with opensets from %s' % (open_txt))
+            open_set_ = LT_Dataset('./data/%s/%s_open' % (dataset, dataset), open_txt, transform)
+            set_ = ConcatDataset([set_, open_set_])
+
+        if sampler_dic and phase == 'train':
+            print('Using sampler: ', sampler_dic['sampler'])
+            # print('Sample %s samples per-class.' % sampler_dic['num_samples_cls'])
+            print('Sampler parameters: ', sampler_dic['params'])
+            return DataLoader(dataset=set_, batch_size=batch_size, shuffle=False,
+                              sampler=sampler_dic['sampler'](set_, **sampler_dic['params']),
+                              num_workers=num_workers)
+        else:
+            print('No sampler.')
+            print('Shuffle is %s.' % (shuffle))
+            return DataLoader(dataset=set_, batch_size=batch_size,
+                              shuffle=shuffle, num_workers=num_workers)
