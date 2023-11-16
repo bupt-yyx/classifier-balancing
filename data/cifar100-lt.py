@@ -1,25 +1,26 @@
 import numpy as np
+import torch
 
 import torchvision
 import torchvision.datasets
-from PIL import Image
+from torchvision import transforms
+from data.ClassAwareSampler import ClassAwareSampler
 
 """
 https://github.com/dvlab-research/Imbalanced-Learning/blob/main/ResCom/datasets/cifar_lt.py
 """
 
 
-class ImbalanceCIFAR100(torchvision.datasets.CIFAR100):
+class IMBALANCECIFAR100(torchvision.datasets.CIFAR100):
     cls_num = 100
 
     def __init__(self, root, imb_type='exp', imb_factor=0.01, rand_number=0, train=True,
                  transform=None, target_transform=None,
                  download=False):
-        super(ImbalanceCIFAR100, self).__init__(root, train, transform, target_transform, download)
+        super(IMBALANCECIFAR100, self).__init__(root, train, transform, target_transform, download)
         np.random.seed(rand_number)
         img_num_list = self.get_img_num_per_cls(self.cls_num, imb_type, imb_factor)
         self.gen_imbalanced_data(img_num_list)
-        self.cls_num_list = self.get_cls_num_list()
 
     def get_img_num_per_cls(self, cls_num, imb_type, imb_factor):
         img_max = len(self.data) / cls_num
@@ -42,6 +43,7 @@ class ImbalanceCIFAR100(torchvision.datasets.CIFAR100):
         new_targets = []
         targets_np = np.array(self.targets, dtype=np.int64)
         classes = np.unique(targets_np)
+        # np.random.shuffle(classes)
         self.num_per_cls_dict = dict()
         for the_class, the_img_num in zip(classes, img_num_per_cls):
             self.num_per_cls_dict[the_class] = the_img_num
@@ -60,18 +62,41 @@ class ImbalanceCIFAR100(torchvision.datasets.CIFAR100):
             cls_num_list.append(self.num_per_cls_dict[i])
         return cls_num_list
 
-    def __getitem__(self, index: int):
-        img, target = self.data[index], self.targets[index]
 
-        # doing this so that it is consistent with all other datasets
-        # to return a PIL Image
-        img = Image.fromarray(img)
+class CIFAR100_LT(object):
+    def __init__(self, distributed, root='./data/cifar100', imb_type='exp',
+                 imb_factor=0.01, batch_size=128, num_works=40):
+        train_transform = transforms.Compose([
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        ])
 
-        if self.transform is not None:
-            img_org = self.transform[0](img)
-            img_cont = self.transform[1](img)
+        eval_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        ])
 
-        if self.target_transform is not None:
-            target = self.target_transform(target)
+        train_dataset = IMBALANCECIFAR100(root=root, imb_type=imb_type, imb_factor=imb_factor, rand_number=0,
+                                          train=True, download=True, transform=train_transform)
+        eval_dataset = torchvision.datasets.CIFAR100(root=root, train=False, download=True, transform=eval_transform)
 
-        return img_org, img_cont, target
+        self.cls_num_list = train_dataset.get_cls_num_list()
+
+        self.dist_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset) if distributed else None
+        self.train_instance = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=batch_size, shuffle=True,
+            num_workers=num_works, pin_memory=True, sampler=self.dist_sampler)
+
+        balance_sampler = ClassAwareSampler(train_dataset)
+        self.train_balance = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=batch_size, shuffle=False,
+            num_workers=num_works, pin_memory=True, sampler=balance_sampler)
+
+        self.eval = torch.utils.data.DataLoader(
+            eval_dataset,
+            batch_size=batch_size, shuffle=False,
+            num_workers=num_works, pin_memory=True)

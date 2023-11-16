@@ -15,6 +15,10 @@ All rights reserved.
 import os
 import argparse
 import pprint
+
+import torch
+import torchvision
+
 from data import dataloader
 from run_networks import model
 import warnings
@@ -99,32 +103,37 @@ def split2phase(split):
 
 if not test_mode:
     print("yyx")
-    sampler_defs = training_opt['sampler']
-    if sampler_defs:
-        if sampler_defs['type'] == 'ClassAwareSampler':
-            sampler_dic = {
-                'sampler': source_import(sampler_defs['def_file']).get_sampler(),
-                'params': {'num_samples_cls': sampler_defs['num_samples_cls']}
-            }
-        elif sampler_defs['type'] in ['MixedPrioritizedSampler',
-                                      'ClassPrioritySampler']:
-            sampler_dic = {
-                'sampler': source_import(sampler_defs['def_file']).get_sampler(),
-                'params': {k: v for k, v in sampler_defs.items() \
-                           if k not in ['type', 'def_file']}
-            }
-    else:
-        sampler_dic = None
-
-    splits = ['train', 'train_plain', 'val']
-    if dataset not in ['iNaturalist18', 'ImageNet']:
-        splits.append('test')
-    data = {x: dataloader.load_data(data_root=data_root[dataset.rstrip('_LT')],
-                                    dataset=dataset, phase=split2phase(x),
-                                    batch_size=training_opt['batch_size'],
-                                    sampler_dic=sampler_dic,
-                                    num_workers=training_opt['num_workers'])
-            for x in splits}
+    # sampler_defs = training_opt['sampler']
+    # if sampler_defs:
+    #     if sampler_defs['type'] == 'ClassAwareSampler':
+    #         sampler_dic = {
+    #             'sampler': source_import(sampler_defs['def_file']).get_sampler(),
+    #             'params': {'num_samples_cls': sampler_defs['num_samples_cls']}
+    #         }
+    #     elif sampler_defs['type'] in ['MixedPrioritizedSampler',
+    #                                   'ClassPrioritySampler']:
+    #         sampler_dic = {
+    #             'sampler': source_import(sampler_defs['def_file']).get_sampler(),
+    #             'params': {k: v for k, v in sampler_defs.items() \
+    #                        if k not in ['type', 'def_file']}
+    #         }
+    # else:
+    #     sampler_dic = None
+    #
+    # splits = ['train', 'train_plain', 'val']
+    # if dataset not in ['iNaturalist18', 'ImageNet']:
+    #     splits.append('test')
+    # data = {x: dataloader.load_data(data_root=data_root[dataset.rstrip('_LT')],
+    #                                 dataset=dataset, phase=split2phase(x),
+    #                                 batch_size=training_opt['batch_size'],
+    #                                 sampler_dic=sampler_dic,
+    #                                 num_workers=training_opt['num_workers'])
+    #         for x in splits}
+    """ test"""
+    trainset = torchvision.datasets.CIFAR100(root='./cifar_data', train=True,
+                                             download=True, transform=None)
+    data = torch.utils.data.DataLoader(trainset, batch_size=4,
+                                       shuffle=True, num_workers=2)
 
     training_model = model(config, data, test=False)
 
